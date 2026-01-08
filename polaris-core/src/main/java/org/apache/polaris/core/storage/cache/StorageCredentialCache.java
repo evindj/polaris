@@ -158,7 +158,66 @@ public class StorageCredentialCache {
               "Failed to get subscoped credentials: %s",
               scopedCredentialsResult.getExtraInformation());
         };
-    return cache.get(key, loader).toAccessConfig();
+    StorageAccessConfig cachedConfig = cache.get(key, loader).toAccessConfig();
+
+    // Add refreshCredentialsEndpoint to the response if it was provided but not in cache.
+    // This allows the same cached credentials to be reused regardless of whether
+    // refreshCredentialsEndpoint was specified, avoiding duplicate STS calls.
+    return addRefreshEndpointIfNeeded(cachedConfig, refreshCredentialsEndpoint);
+  }
+
+  private StorageAccessConfig addRefreshEndpointIfNeeded(
+      StorageAccessConfig config, Optional<String> refreshCredentialsEndpoint) {
+    if (refreshCredentialsEndpoint.isEmpty()) {
+      return config;
+    }
+
+    // Check if the refresh endpoint is already present in the extra properties
+    String existingEndpoint =
+        config
+            .extraProperties()
+            .get(
+                org.apache.polaris.core.storage.StorageAccessProperty
+                    .AWS_REFRESH_CREDENTIALS_ENDPOINT
+                    .getPropertyName());
+
+    if (existingEndpoint != null && existingEndpoint.equals(refreshCredentialsEndpoint.get())) {
+      // Already present with the same value
+      return config;
+    }
+
+    if (existingEndpoint != null) {
+      // Different endpoint requested - log warning and use the requested one
+      LOGGER
+          .atWarn()
+          .addKeyValue("cachedEndpoint", existingEndpoint)
+          .addKeyValue("requestedEndpoint", refreshCredentialsEndpoint.get())
+          .log("Refresh credentials endpoint mismatch between cache and request");
+    }
+
+    // Build new config with the refresh endpoint added
+    StorageAccessConfig.Builder builder = StorageAccessConfig.builder();
+
+    // Copy all credentials
+    config.credentials().forEach(builder::putCredential);
+
+    // Copy all extra properties
+    config.extraProperties().forEach(builder::putExtraProperty);
+
+    // Add the refresh credentials endpoint
+    builder.putExtraProperty(
+        org.apache.polaris.core.storage.StorageAccessProperty.AWS_REFRESH_CREDENTIALS_ENDPOINT
+            .getPropertyName(),
+        refreshCredentialsEndpoint.get());
+
+    // Copy all internal properties
+    config.internalProperties().forEach(builder::putInternalProperty);
+
+    // Set expiration and credential vending support
+    config.expiresAt().ifPresent(builder::expiresAt);
+    builder.supportsCredentialVending(config.supportsCredentialVending());
+
+    return builder.build();
   }
 
   @VisibleForTesting

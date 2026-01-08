@@ -50,9 +50,6 @@ public interface StorageCredentialCacheKey {
   Set<String> allowedWriteLocations();
 
   @Value.Parameter(order = 7)
-  Optional<String> refreshCredentialsEndpoint();
-
-  @Value.Parameter(order = 8)
   Optional<String> principalName();
 
   static StorageCredentialCacheKey of(
@@ -67,6 +64,9 @@ public interface StorageCredentialCacheKey {
         entity
             .getInternalPropertiesAsMap()
             .get(PolarisEntityConstants.getStorageConfigInfoPropertyName());
+    // Note: refreshCredentialsEndpoint is intentionally excluded from the cache key
+    // because it doesn't affect the STS request parameters. It's only added to the
+    // response after credentials are generated.
     return ImmutableStorageCredentialCacheKey.of(
         realmId,
         entity.getCatalogId(),
@@ -74,7 +74,6 @@ public interface StorageCredentialCacheKey {
         allowedListAction,
         allowedReadLocations,
         allowedWriteLocations,
-        refreshCredentialsEndpoint,
         polarisPrincipal.map(PolarisPrincipal::getName));
   }
 }

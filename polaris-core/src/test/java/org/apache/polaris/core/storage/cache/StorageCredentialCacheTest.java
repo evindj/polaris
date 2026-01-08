@@ -564,4 +564,85 @@ public class StorageCredentialCacheTest {
         .containsExactlyInAnyOrderEntriesOf(
             Map.of("s3.endpoint", "test-endpoint1", "s3.path-style-access", "true"));
   }
+
+  @Test
+  public void testRefreshCredentialsEndpointDoesNotAffectCacheKey() {
+    // This test verifies the fix for issue #3292: One load table API request results in two STS
+    // AssumeRole requests
+    // The cache should return the same credentials regardless of refreshCredentialsEndpoint
+    // parameter
+
+    String refreshEndpoint = "https://polaris.example.com/api/catalog/v1/oauth/tokens";
+    ScopedCredentialsResult credentials =
+        new ScopedCredentialsResult(
+            StorageAccessConfig.builder()
+                .put(StorageAccessProperty.AWS_KEY_ID, "test-key-id")
+                .put(StorageAccessProperty.AWS_SECRET_KEY, "test-secret")
+                .put(StorageAccessProperty.AWS_TOKEN, "test-token")
+                .put(
+                    StorageAccessProperty.EXPIRATION_TIME,
+                    String.valueOf(System.currentTimeMillis() + 3600000))
+                .build());
+
+    Mockito.when(
+            storageCredentialsVendor.getSubscopedCredsForEntity(
+                Mockito.any(),
+                Mockito.anyBoolean(),
+                Mockito.anySet(),
+                Mockito.anySet(),
+                Mockito.any(),
+                Mockito.any()))
+        .thenReturn(credentials);
+
+    PolarisEntity entity = getPolarisEntities().get(0);
+    PolarisPrincipal principal = PolarisPrincipal.of("test-principal", Map.of(), Set.of());
+    Set<String> readLocations = Set.of("s3://bucket/path");
+    Set<String> writeLocations = Set.of();
+
+    // First call WITHOUT refreshCredentialsEndpoint
+    StorageAccessConfig config1 =
+        storageCredentialCache.getOrGenerateSubScopeCreds(
+            storageCredentialsVendor,
+            entity,
+            true,
+            readLocations,
+            writeLocations,
+            principal,
+            Optional.empty());
+
+    // Second call WITH refreshCredentialsEndpoint
+    StorageAccessConfig config2 =
+        storageCredentialCache.getOrGenerateSubScopeCreds(
+            storageCredentialsVendor,
+            entity,
+            true,
+            readLocations,
+            writeLocations,
+            principal,
+            Optional.of(refreshEndpoint));
+
+    // Verify getSubscopedCredsForEntity was called only ONCE (cache hit on second call)
+    Mockito.verify(storageCredentialsVendor, Mockito.times(1))
+        .getSubscopedCredsForEntity(
+            Mockito.any(),
+            Mockito.anyBoolean(),
+            Mockito.anySet(),
+            Mockito.anySet(),
+            Mockito.any(),
+            Mockito.any());
+
+    // Both configs should have the same credentials
+    Assertions.assertThat(config1.credentials()).isEqualTo(config2.credentials());
+
+    // First config should NOT have refresh endpoint
+    Assertions.assertThat(config1.extraProperties())
+        .doesNotContainKey(
+            StorageAccessProperty.AWS_REFRESH_CREDENTIALS_ENDPOINT.getPropertyName());
+
+    // Second config SHOULD have refresh endpoint added
+    Assertions.assertThat(config2.extraProperties())
+        .containsEntry(
+            StorageAccessProperty.AWS_REFRESH_CREDENTIALS_ENDPOINT.getPropertyName(),
+            refreshEndpoint);
+  }
 }
